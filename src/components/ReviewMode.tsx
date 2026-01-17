@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -11,6 +11,7 @@ export default function ReviewMode() {
   const queryClient = useQueryClient();
   const [index, setIndex] = useState(0);
   const [flipped, setFlipped] = useState(false);
+  const [isTransitioning, setIsTransitioning] = useState(false);
 
   const { data: words, isLoading } = useQuery({
     queryKey: ['vocabulary'],
@@ -25,17 +26,50 @@ export default function ReviewMode() {
     enabled: !!user,
   });
 
+  const shuffleOrderRef = useRef<string[]>([]);
+
+  const shuffledWords = useMemo(() => {
+    if (!words || words.length === 0) return [];
+    
+    // If we already have a shuffle order, maintain it
+    if (shuffleOrderRef.current.length === words.length) {
+      const orderedWords = shuffleOrderRef.current
+        .map(id => words.find(w => w.id === id))
+        .filter(Boolean) as VocabularyItem[];
+      return orderedWords;
+    }
+    
+    // Create new shuffle order
+    const shuffled = [...words];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    
+    // Store the shuffle order
+    shuffleOrderRef.current = shuffled.map(w => w.id);
+    return shuffled;
+  }, [words]);
+
   const toggleStarMutation = useMutation({
     mutationFn: async ({ id, star }: { id: string; star: boolean }) => {
       const { error } = await supabase.from('vocabulary').update({ star }).eq('id', id);
       if (error) throw error;
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vocabulary'] })
+    onSuccess: () => {
+      // Update cache without invalidating to prevent reshuffle
+      queryClient.setQueryData(['vocabulary'], (oldData: VocabularyItem[] | undefined) => {
+        if (!oldData) return oldData;
+        return oldData.map(word => 
+          word.id === currentWord.id ? { ...word, star: !word.star } : word
+        );
+      });
+    }
   });
 
   if (isLoading) return <div className="flex justify-center p-8"><Loader2 className="animate-spin text-indigo-600 w-8 h-8" /></div>;
 
-  if (!words || words.length === 0) {
+  if (!shuffledWords || shuffledWords.length === 0) {
     return (
       <div className="text-center p-12 bg-white/50 backdrop-blur-sm rounded-3xl border border-white/40">
         <Brain className="w-16 h-16 text-slate-300 mx-auto mb-4" />
@@ -45,22 +79,30 @@ export default function ReviewMode() {
     );
   }
 
-  const currentWord = words[index];
+  const currentWord = shuffledWords[index];
 
   const handleNext = () => {
+    if (isTransitioning) return;
+    setIsTransitioning(true);
     setFlipped(false);
     setTimeout(() => {
-      setIndex((prev) => (prev + 1) % words.length);
-    }, 200);
+      setIndex((prev) => (prev + 1) % shuffledWords.length);
+      setIsTransitioning(false);
+    }, 300);
+  };
+
+  const handleFlip = () => {
+    if (isTransitioning) return;
+    setFlipped(!flipped);
   };
 
   return (
     <div className="max-w-md mx-auto perspective-1000">
-      <div className="relative h-96 w-full cursor-pointer group" onClick={() => setFlipped(!flipped)}>
+      <div className="relative h-96 w-full cursor-pointer group" onClick={handleFlip}>
         <motion.div
-          className="w-full h-full relative preserve-3d transition-all duration-500"
+          className="w-full h-full relative preserve-3d"
           animate={{ rotateY: flipped ? 180 : 0 }}
-          transition={{ duration: 0.6, type: "spring", stiffness: 260, damping: 20 }}
+          transition={{ duration: 0.5, ease: [0.4, 0, 0.2, 1] }}
           style={{ transformStyle: 'preserve-3d' }}
         >
           {/* Front */}
@@ -115,7 +157,7 @@ export default function ReviewMode() {
       </div>
 
       <div className="text-center mt-6 text-sm text-slate-400 font-medium">
-        Card {index + 1} of {words.length}
+        Card {index + 1} of {shuffledWords.length}
       </div>
     </div>
   );

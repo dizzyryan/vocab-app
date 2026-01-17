@@ -37,6 +37,7 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      <Route path="*" element={<Navigate to={user ? "/" : "/auth"} replace />} />
     </Routes>
   );
 }
